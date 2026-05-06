@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import FileResponse
 import shutil, os, re
 import pandas as pd
+import pdfplumber
 
 app = FastAPI()
 
@@ -16,27 +17,47 @@ def home():
     return {"message": "KR InvoiceHub Running 🚀"}
 
 
-# 🔍 Simple extraction (no AI, works offline)
+# 📄 Read PDF or text file
+def read_file(path):
+    text = ""
+
+    if path.endswith(".pdf"):
+        try:
+            with pdfplumber.open(path) as pdf:
+                for page in pdf.pages:
+                    text += page.extract_text() or ""
+        except:
+            pass
+    else:
+        try:
+            text = open(path, "r", errors="ignore").read()
+        except:
+            pass
+
+    return text
+
+
+# 🔍 Extract invoice fields
 def extract_data(text):
     def find(pattern):
-        match = re.search(pattern, text)
-        return match.group(1) if match else ""
+        match = re.search(pattern, text, re.IGNORECASE)
+        return match.group(1).strip() if match else ""
 
     return {
-        "invoice_number": find(r"Invoice\s*No[:\s]*([A-Z0-9\-]+)"),
-        "invoice_date": find(r"Date[:\s]*([\d\-\/]+)"),
-        "pnr": find(r"PNR[:\s]*([A-Z0-9]+)"),
-        "ticket_number": find(r"Ticket\s*No[:\s]*([\d]+)"),
-        "buyer_gst": find(r"GSTIN[:\s]*([A-Z0-9]+)"),
+        "invoice_number": find(r"invoice\s*(no|number)[:\s]*([A-Z0-9\-]+)"),
+        "invoice_date": find(r"(date)[:\s]*([\d\/\-]+)"),
+        "pnr": find(r"(pnr)[:\s]*([A-Z0-9]+)"),
+        "ticket_number": find(r"(ticket\s*no)[:\s]*([\d]+)"),
+        "buyer_gst": find(r"(gstin)[:\s]*([A-Z0-9]+)"),
         "buyer_name": "Not Found",
         "seller_gst": "",
         "seller_name": "",
-        "basic_fare": find(r"Basic Fare[:\s]*([\d\.]+)"),
-        "other_charges": find(r"Charges[:\s]*([\d\.]+)"),
-        "cgst": find(r"CGST[:\s]*([\d\.]+)"),
-        "sgst": find(r"SGST[:\s]*([\d\.]+)"),
-        "igst": find(r"IGST[:\s]*([\d\.]+)"),
-        "total_amount": find(r"Total[:\s]*([\d\.]+)")
+        "basic_fare": find(r"(basic\s*fare)[:\s]*([\d\.]+)"),
+        "other_charges": find(r"(charges|fees)[:\s]*([\d\.]+)"),
+        "cgst": find(r"(cgst)[:\s]*([\d\.]+)"),
+        "sgst": find(r"(sgst)[:\s]*([\d\.]+)"),
+        "igst": find(r"(igst)[:\s]*([\d\.]+)"),
+        "total_amount": find(r"(total)[:\s]*([\d\.]+)")
     }
 
 
@@ -48,11 +69,7 @@ async def upload_invoice(file: UploadFile = File(...)):
         with open(path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Try reading as text (basic)
-        try:
-            text = open(path, "r", errors="ignore").read()
-        except:
-            text = ""
+        text = read_file(path)
 
         data = extract_data(text)
 
@@ -64,7 +81,11 @@ async def upload_invoice(file: UploadFile = File(...)):
 
         df.to_excel(EXCEL_FILE, index=False)
 
-        return {"status": "processed", "data": data}
+        return {
+            "status": "processed",
+            "extracted_text_preview": text[:500],
+            "data": data
+        }
 
     except Exception as e:
         return {"error": str(e)}
