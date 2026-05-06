@@ -19,7 +19,7 @@ def home():
     return {"message": "KR InvoiceHub Running 🚀"}
 
 
-# 📄 Read text-based PDF
+# 📄 Read text PDF
 def read_pdf(path):
     text = ""
     try:
@@ -31,7 +31,7 @@ def read_pdf(path):
     return text
 
 
-# 🌐 OCR API (for scanned PDFs/images)
+# 🌐 OCR fallback
 def read_with_ocr_api(path):
     try:
         with open(path, 'rb') as f:
@@ -44,36 +44,64 @@ def read_with_ocr_api(path):
                 }
             )
         result = response.json()
-
         if result.get("ParsedResults"):
             return result["ParsedResults"][0]["ParsedText"]
     except:
         pass
-
     return ""
 
 
-# 🔍 Improved extraction
+# 🔍 FINAL EXTRACTION
 def extract_data(text):
+
     def find(pattern):
         match = re.search(pattern, text, re.IGNORECASE)
         return match.group(1).strip() if match else ""
 
+    def clean(value):
+        return value.replace("\n", "").strip()
+
+    # ✅ Buyer Name
+    buyer_name = clean(find(r"Passenger\s*Name\s*:\s*([A-Za-z ]+)"))
+
+    # ✅ GST
+    buyer_gst = find(r"GSTIN\s*of\s*Customer\s*:\s*([A-Z0-9]+)")
+    seller_gst = find(r"GSTN\s*:\s*([A-Z0-9]+)")
+
+    # ✅ Total Invoice Value (smart)
+    total = (
+        find(r"Total\s*Invoice\s*Value\s*[:\-]?\s*([\d,\.]+)") or
+        find(r"Grand\s*Total\s*[:\-]?\s*([\d,\.]+)") or
+        find(r"Amount\s*Payable\s*[:\-]?\s*([\d,\.]+)") or
+        find(r"Total\s*[:\-]?\s*([\d,\.]+)")
+    )
+
+    # fallback: pick highest number
+    if not total:
+        nums = re.findall(r"\d{3,}[.,]?\d*", text)
+        if nums:
+            total = max(nums, key=lambda x: float(x.replace(",", "")))
+
     return {
+        # 📌 Basic Info
         "invoice_number": find(r"Invoice\s*Number\s*:\s*([A-Z0-9]+)"),
         "invoice_date": find(r"Invoice\s*Date\s*:\s*([\d\-\/]+)"),
         "pnr": find(r"PNR\s*No\s*:\s*([A-Z0-9]+)"),
         "ticket_number": find(r"Ticket\s*No\s*:\s*([\d]+)"),
-        "buyer_gst": find(r"GSTIN\s*of\s*Customer\s*:\s*([A-Z0-9]+)"),
-        "buyer_name": find(r"Passenger\s*Name\s*:\s*([A-Z\s]+)"),
-        "seller_gst": find(r"GSTN\s*:\s*([A-Z0-9]+)"),
+
+        # 👤 Buyer / Seller
+        "buyer_name": buyer_name,
+        "buyer_gst": buyer_gst,
         "seller_name": "AIR INDIA EXPRESS LIMITED",
-        "basic_fare": find(r"Basic\s*Fare\s*:\s*([\d\.]+)"),
-        "other_charges": find(r"Charges\s*:\s*([\d\.]+)"),
-        "cgst": find(r"CGST\s*:\s*([\d\.]+)"),
-        "sgst": find(r"SGST\s*:\s*([\d\.]+)"),
-        "igst": find(r"IGST\s*:\s*([\d\.]+)"),
-        "total_amount": find(r"Total\s*:\s*([\d\.]+)")
+        "seller_gst": seller_gst,
+
+        # 💰 Financials (your required columns)
+        "total_taxable_value": find(r"Taxable\s*Value\s*[:\-]?\s*([\d,\.]+)"),
+        "non_taxable_value": find(r"Non[-\s]*Taxable\s*Value\s*[:\-]?\s*([\d,\.]+)"),
+        "cgst": find(r"CGST\s*[:\-]?\s*([\d,\.]+)"),
+        "sgst": find(r"SGST\s*[:\-]?\s*([\d,\.]+)"),
+        "igst": find(r"IGST\s*[:\-]?\s*([\d,\.]+)"),
+        "total_invoice_value": total
     }
 
 
@@ -86,10 +114,10 @@ async def upload_invoice(file: UploadFile = File(...)):
         with open(path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # try PDF text first
+        # extract text
         text = read_pdf(path)
 
-        # fallback to OCR
+        # fallback OCR
         if not text.strip():
             text = read_with_ocr_api(path)
 
@@ -99,7 +127,7 @@ async def upload_invoice(file: UploadFile = File(...)):
         # extract data
         data = extract_data(text)
 
-        # save to excel
+        # save Excel
         df = pd.DataFrame([data])
 
         if os.path.exists(EXCEL_FILE):
@@ -118,7 +146,6 @@ async def upload_invoice(file: UploadFile = File(...)):
         return {"error": str(e)}
 
 
-# 📥 download excel
 @app.get("/download/")
 def download_excel():
     if os.path.exists(EXCEL_FILE):
