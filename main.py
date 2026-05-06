@@ -3,6 +3,8 @@ from fastapi.responses import FileResponse
 import shutil, os, re
 import pandas as pd
 import pdfplumber
+from paddleocr import PaddleOCR
+from PIL import Image
 
 app = FastAPI()
 
@@ -11,13 +13,28 @@ os.makedirs("data", exist_ok=True)
 
 EXCEL_FILE = "data/invoices.xlsx"
 
+ocr = PaddleOCR(use_angle_cls=True, lang='en')
+
 
 @app.get("/")
 def home():
-    return {"message": "KR InvoiceHub Running 🚀"}
+    return {"message": "KR InvoiceHub OCR Running 🚀"}
 
 
-# 📄 Read PDF or text file
+# 🔍 OCR for images or scanned PDFs
+def read_with_ocr(path):
+    text = ""
+    try:
+        result = ocr.ocr(path)
+        for line in result:
+            for word in line:
+                text += word[1][0] + " "
+    except:
+        pass
+    return text
+
+
+# 📄 Read file (PDF + OCR fallback)
 def read_file(path):
     text = ""
 
@@ -25,39 +42,40 @@ def read_file(path):
         try:
             with pdfplumber.open(path) as pdf:
                 for page in pdf.pages:
-                    text += page.extract_text() or ""
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text
         except:
             pass
-    else:
-        try:
-            text = open(path, "r", errors="ignore").read()
-        except:
-            pass
+
+    # 👉 If no text found → use OCR
+    if not text.strip():
+        text = read_with_ocr(path)
 
     return text
 
 
-# 🔍 Extract invoice fields
+# 🔍 Extract fields
 def extract_data(text):
     def find(pattern):
         match = re.search(pattern, text, re.IGNORECASE)
         return match.group(1).strip() if match else ""
 
     return {
-        "invoice_number": find(r"invoice\s*(no|number)[:\s]*([A-Z0-9\-]+)"),
-        "invoice_date": find(r"(date)[:\s]*([\d\/\-]+)"),
-        "pnr": find(r"(pnr)[:\s]*([A-Z0-9]+)"),
-        "ticket_number": find(r"(ticket\s*no)[:\s]*([\d]+)"),
-        "buyer_gst": find(r"(gstin)[:\s]*([A-Z0-9]+)"),
-        "buyer_name": "Not Found",
+        "invoice_number": find(r"invoice.*?([A-Z0-9\-]{5,})"),
+        "invoice_date": find(r"date[:\s]*([\d\/\-]+)"),
+        "pnr": find(r"pnr[:\s]*([A-Z0-9]+)"),
+        "ticket_number": find(r"ticket[:\s]*([\d]+)"),
+        "buyer_gst": find(r"gstin[:\s]*([A-Z0-9]+)"),
+        "buyer_name": "",
         "seller_gst": "",
         "seller_name": "",
-        "basic_fare": find(r"(basic\s*fare)[:\s]*([\d\.]+)"),
-        "other_charges": find(r"(charges|fees)[:\s]*([\d\.]+)"),
-        "cgst": find(r"(cgst)[:\s]*([\d\.]+)"),
-        "sgst": find(r"(sgst)[:\s]*([\d\.]+)"),
-        "igst": find(r"(igst)[:\s]*([\d\.]+)"),
-        "total_amount": find(r"(total)[:\s]*([\d\.]+)")
+        "basic_fare": find(r"fare[:\s]*([\d\.]+)"),
+        "other_charges": find(r"charges[:\s]*([\d\.]+)"),
+        "cgst": find(r"cgst[:\s]*([\d\.]+)"),
+        "sgst": find(r"sgst[:\s]*([\d\.]+)"),
+        "igst": find(r"igst[:\s]*([\d\.]+)"),
+        "total_amount": find(r"total[:\s]*([\d\.]+)")
     }
 
 
@@ -83,7 +101,7 @@ async def upload_invoice(file: UploadFile = File(...)):
 
         return {
             "status": "processed",
-            "extracted_text_preview": text[:500],
+            "text_preview": text[:500],
             "data": data
         }
 
@@ -91,7 +109,6 @@ async def upload_invoice(file: UploadFile = File(...)):
         return {"error": str(e)}
 
 
-# 📥 Download Excel
 @app.get("/download/")
 def download_excel():
     if os.path.exists(EXCEL_FILE):
