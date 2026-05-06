@@ -1,26 +1,24 @@
-@app.post("/upload/")
-async def upload_invoice(file: UploadFile = File(...)):
+def extract_data(text):
     try:
-        path = f"uploads/{file.filename}"
+        from openai import OpenAI
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        with open(path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        prompt = f"""
+Extract airline invoice data and return JSON with:
+invoice_number, invoice_date, pnr, ticket_number,
+buyer_gst, buyer_name, seller_gst, seller_name,
+basic_fare, other_charges, cgst, sgst, igst, total_amount
+{text}
+"""
 
-        # TEMP: skip reading PDF (causes crash)
-        text = "invoice data"
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
 
-        data = extract_data(text)
-
-        file_path = "data/invoices.xlsx"
-        df = pd.DataFrame([data])
-
-        if os.path.exists(file_path):
-            old = pd.read_excel(file_path)
-            df = pd.concat([old, df])
-
-        df.to_excel(file_path, index=False)
-
-        return {"status": "processed", "data": data}
+        import json
+        return json.loads(response.choices[0].message.content)
 
     except Exception as e:
         return {"error": str(e)}
