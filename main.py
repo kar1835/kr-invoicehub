@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import FileResponse
-import shutil, os, re
+import shutil, os, re, requests
 import pandas as pd
 import pdfplumber
 
@@ -10,24 +10,42 @@ os.makedirs("uploads", exist_ok=True)
 os.makedirs("data", exist_ok=True)
 
 EXCEL_FILE = "data/invoices.xlsx"
+OCR_API_KEY = os.getenv("OCR_API_KEY")
 
 
 @app.get("/")
 def home():
-    return {"message": "KR InvoiceHub Running 🚀"}
+    return {"message": "KR InvoiceHub OCR API Running 🚀"}
 
 
-# 📄 Read only text PDFs (safe)
-def read_file(path):
+# 📄 Read PDF text first
+def read_pdf(path):
     text = ""
-    if path.endswith(".pdf"):
-        try:
-            with pdfplumber.open(path) as pdf:
-                for page in pdf.pages:
-                    text += page.extract_text() or ""
-        except:
-            pass
+    try:
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                text += page.extract_text() or ""
+    except:
+        pass
     return text
+
+
+# 🌐 OCR API fallback
+def read_with_ocr_api(path):
+    try:
+        with open(path, 'rb') as f:
+            response = requests.post(
+                'https://api.ocr.space/parse/image',
+                files={'file': f},
+                data={
+                    'apikey': OCR_API_KEY,
+                    'language': 'eng'
+                }
+            )
+        result = response.json()
+        return result['ParsedResults'][0]['ParsedText']
+    except:
+        return ""
 
 
 # 🔍 Extract data
@@ -62,15 +80,14 @@ async def upload_invoice(file: UploadFile = File(...)):
         with open(path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        text = read_file(path)
+        text = read_pdf(path)
 
-        # 👉 fallback if empty (scanned PDF)
+        # 👉 If PDF text empty → use OCR API
         if not text.strip():
-            return {
-                "status": "failed",
-                "message": "Scanned PDF detected. OCR required.",
-                "tip": "Use text-based PDF or enable OCR (next step)"
-            }
+            text = read_with_ocr_api(path)
+
+        if not text.strip():
+            return {"status": "failed", "message": "Could not extract text"}
 
         data = extract_data(text)
 
@@ -84,6 +101,7 @@ async def upload_invoice(file: UploadFile = File(...)):
 
         return {
             "status": "processed",
+            "preview": text[:500],
             "data": data
         }
 
