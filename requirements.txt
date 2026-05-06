@@ -4,5 +4,3 @@ python-multipart
 pandas
 openpyxl
 pdfplumber
-paddleocr
-Pillow
