@@ -3,8 +3,6 @@ from fastapi.responses import FileResponse
 import shutil, os, re
 import pandas as pd
 import pdfplumber
-from paddleocr import PaddleOCR
-from PIL import Image
 
 app = FastAPI()
 
@@ -13,49 +11,26 @@ os.makedirs("data", exist_ok=True)
 
 EXCEL_FILE = "data/invoices.xlsx"
 
-ocr = PaddleOCR(use_angle_cls=True, lang='en')
-
 
 @app.get("/")
 def home():
-    return {"message": "KR InvoiceHub OCR Running 🚀"}
+    return {"message": "KR InvoiceHub Running 🚀"}
 
 
-# 🔍 OCR for images or scanned PDFs
-def read_with_ocr(path):
-    text = ""
-    try:
-        result = ocr.ocr(path)
-        for line in result:
-            for word in line:
-                text += word[1][0] + " "
-    except:
-        pass
-    return text
-
-
-# 📄 Read file (PDF + OCR fallback)
+# 📄 Read only text PDFs (safe)
 def read_file(path):
     text = ""
-
     if path.endswith(".pdf"):
         try:
             with pdfplumber.open(path) as pdf:
                 for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text
+                    text += page.extract_text() or ""
         except:
             pass
-
-    # 👉 If no text found → use OCR
-    if not text.strip():
-        text = read_with_ocr(path)
-
     return text
 
 
-# 🔍 Extract fields
+# 🔍 Extract data
 def extract_data(text):
     def find(pattern):
         match = re.search(pattern, text, re.IGNORECASE)
@@ -89,6 +64,14 @@ async def upload_invoice(file: UploadFile = File(...)):
 
         text = read_file(path)
 
+        # 👉 fallback if empty (scanned PDF)
+        if not text.strip():
+            return {
+                "status": "failed",
+                "message": "Scanned PDF detected. OCR required.",
+                "tip": "Use text-based PDF or enable OCR (next step)"
+            }
+
         data = extract_data(text)
 
         df = pd.DataFrame([data])
@@ -101,7 +84,6 @@ async def upload_invoice(file: UploadFile = File(...)):
 
         return {
             "status": "processed",
-            "text_preview": text[:500],
             "data": data
         }
 
